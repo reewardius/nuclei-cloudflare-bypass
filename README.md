@@ -15,7 +15,7 @@ python3 cloudflare_bypass.py -f alive_http_services.txt -o cf-bypass-results.txt
 
 #### Accessible Inactive Hosts
 
-Identifies inactive and potentially accessible hosts from a list of domains.
+Identifies inactive and potentially accessible hosts from a list of domains in `subs.txt`
 ```bash
 # Default mode (fast)
 python3 inactive_hosts.py -f subs.txt
