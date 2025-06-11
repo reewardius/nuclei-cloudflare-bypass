@@ -247,7 +247,11 @@ def print_bypass_results(bypasses):
         
         # Показываем curl команду для воспроизведения
         print(f"{CYAN}Curl Command:{RESET}")
-        print(f"  curl -H 'Host: {bypass['host_header']}' '{bypass['base_url']}' -k")
+        print(f"  curl -H \"Host: {bypass['host_header']}\" {bypass['base_url']} -k -L -I")
+        
+        # Показываем команду Nuclei для дальнейшего сканирования
+        print(f"{CYAN}Nuclei Command:{RESET}")
+        print(f"  nuclei -u {bypass['base_url']} -H \"Host: {bypass['host_header']}\" -rl 110 -c 25")
         
         print("-" * 60)
 
@@ -263,7 +267,8 @@ def save_results_to_file(bypasses, filename):
                 f.write(f"Base URL: {bypass['base_url']}\n")
                 f.write(f"Host Header: {bypass['host_header']}\n")
                 f.write(f"Status Code: {bypass['status_code']}\n")
-                f.write(f"Curl Command: curl -H 'Host: {bypass['host_header']}' '{bypass['base_url']}' -k\n")
+                f.write(f"Curl Command: curl -H \"Host: {bypass['host_header']}\" {bypass['base_url']} -k -L -I\n")
+                f.write(f"Nuclei Command: nuclei -u {bypass['base_url']} -H \"Host: {bypass['host_header']}\" -rl 110 -c 25 \n")
                 f.write("-" * 50 + "\n\n")
                 
         print(f"{GREEN}[SAVED]{RESET} Результаты сохранены в {filename}")
