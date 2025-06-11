@@ -2,7 +2,7 @@
 
 This workflow discovers subdomains, scans for open ports, and identifies live HTTP services.
 ```bash
-subfinder -dL root.txt -all -silent -o subs.txt && \
+subfinder -d domain.com -all -silent -o subs.txt && \
 naabu -l subs.txt -s s -tp 100 -ec -c 50 -o naabu.txt && \
 httpx -l naabu.txt -rl 500 -t 200 -o alive_http_services.txt
 ```
