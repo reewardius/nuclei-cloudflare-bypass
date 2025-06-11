@@ -24,5 +24,5 @@ python3 inactive_hosts.py -f subs.txt
 python3 inactive_hosts.py -f subs.txt -w 50 --dns-timeout 2 --http-timeout 3
 
 # Save results to a file
-python3 inactive_hosts.py -f subs.txt -o results.txt
+python3 inactive_hosts.py -f subs.txt -o inactive-hosts-results.txt
 ```
