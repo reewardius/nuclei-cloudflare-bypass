@@ -402,7 +402,7 @@ def print_access_results(found_access):
         # Показываем команды для тестирования
         print(f"{CYAN}Test Commands:{RESET}")
         print(f"  curl -H \"Host: {access['inactive_host']}\" {access['active_url']} -k -L -I")
-        print(f"  nuclei -u {access['active_url']} -H \"Host: {access['inactive_host']}\" -t ~/nuclei-templates/")
+        print(f"  nuclei -u {access['active_url']} -H \"Host: {access['inactive_host']}\" -rl 110 -c 25")
         
         print("-" * 60)
 
@@ -418,7 +418,7 @@ def save_results_to_file(found_access, filename):
                 f.write(f"Try using host header **{access['inactive_host']}** on {access['active_url']}\n")
                 f.write(f"Status Code: {access['status_code']}\n")
                 f.write(f"Curl Command: curl -H \"Host: {access['inactive_host']}\" {access['active_url']} -k -L -I\n")
-                f.write(f"Nuclei Command: nuclei -u {access['active_url']} -H \"Host: {access['inactive_host']}\" -t ~/nuclei-templates/\n")
+                f.write(f"Nuclei Command: nuclei -u {access['active_url']} -H \"Host: {access['inactive_host']}\" -rl 110 -c 25 \n")
                 f.write("-" * 50 + "\n\n")
                 
         print(f"{GREEN}[SAVED]{RESET} Результаты сохранены в {filename}")
