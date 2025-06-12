@@ -25,6 +25,13 @@ MAGENTA = "\033[95m"
 CYAN = "\033[96m"
 RESET = "\033[0m"
 
+# Список Server заголовков для false positives
+FALSE_POSITIVE_SERVERS = [
+    'microsoft-azure-application-gateway',
+    'lb1',
+    'awselb/2.0'
+]
+
 def check_dns_fast(domain, timeout=3):
     """Быстрая проверка DNS через socket (самый быстрый метод)"""
     try:
@@ -44,13 +51,11 @@ def check_dns_with_dnspython(domain, timeout=3):
         resolver.timeout = timeout
         resolver.lifetime = timeout
         
-        # Исправленный API для dnspython
         try:
-            answers = resolver.query(domain, 'A')  # Старый API
+            answers = resolver.query(domain, 'A')
             if answers:
                 return True, [str(rdata) for rdata in answers]
         except AttributeError:
-            # Новый API для dnspython >= 2.0
             answers = resolver.resolve(domain, 'A')
             if answers:
                 return True, [str(rdata) for rdata in answers]
@@ -68,12 +73,9 @@ def check_dns_parallel(domains, timeout=3, max_workers=20):
     results = {}
     
     def check_single_domain(domain):
-        # Сначала пробуем самый быстрый метод - socket
         success, result = check_dns_fast(domain, timeout)
         if success:
             return domain, True, result
-        
-        # Если socket не сработал, пробуем dnspython
         success, result = check_dns_with_dnspython(domain, timeout)
         return domain, success, result
     
@@ -90,10 +92,10 @@ def check_dns_parallel(domains, timeout=3, max_workers=20):
     return results
 
 def test_http_fast(url, host_header=None, timeout=5):
-    """Быстрый HTTP запрос"""
+    """Быстрый HTTP запрос с следованием за редиректами"""
     headers = {
         'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
-        'Connection': 'close'  # Не держим соединение
+        'Connection': 'close'
     }
     
     if host_header:
@@ -105,23 +107,28 @@ def test_http_fast(url, host_header=None, timeout=5):
             headers=headers,
             verify=False,
             timeout=timeout,
-            allow_redirects=False,
-            stream=True  # Не загружаем тело полностью
+            allow_redirects=True,  # Включаем следование за редиректами
+            stream=True
         )
         
-        # Читаем только первые 500 байт тела
         body_preview = ""
         try:
             body_preview = response.content[:500].decode('utf-8', errors='ignore')
         except:
             pass
         
+        # Проверяем Server заголовок на наличие false positives
+        server_header = response.headers.get('Server', '').lower()
+        is_false_positive = any(fp.lower() in server_header for fp in FALSE_POSITIVE_SERVERS)
+        
         return {
             'success': True,
             'status_code': response.status_code,
             'headers': dict(response.headers),
             'body_preview': body_preview,
-            'error': None
+            'error': None,
+            'is_false_positive': is_false_positive,
+            'final_url': response.url  # Сохраняем финальный URL после редиректов
         }
         
     except Exception as e:
@@ -130,7 +137,9 @@ def test_http_fast(url, host_header=None, timeout=5):
             'status_code': None,
             'headers': {},
             'body_preview': "",
-            'error': str(e)
+            'error': str(e),
+            'is_false_positive': False,
+            'final_url': url
         }
 
 def test_http_parallel(urls, timeout=5, max_workers=15):
@@ -141,13 +150,11 @@ def test_http_parallel(urls, timeout=5, max_workers=15):
     
     def test_single_url(url_info):
         domain, url = url_info
-        # Тестируем сначала HTTPS, потом HTTP
         for protocol in ['https', 'http']:
             test_url = url.replace('https://', f'{protocol}://').replace('http://', f'{protocol}://')
             result = test_http_fast(test_url, timeout=timeout)
-            if result['success'] and is_successful_response(result['status_code']):
+            if result['success'] and is_successful_response(result['status_code']) and not result['is_false_positive']:
                 return domain, True, test_url, result
-        
         return domain, False, url, None
     
     with ThreadPoolExecutor(max_workers=max_workers) as executor:
@@ -196,37 +203,35 @@ def load_targets_from_file(filename):
 
 def is_successful_response(status_code):
     """Проверяет, является ли ответ успешным (включая 404)"""
-    # Расширяем список успешных ответов - 404 тоже показывает, что сервер отвечает
-    return status_code in range(200, 500) or status_code in [401, 403, 405]
+    return status_code in [200, 403, 404]
 
 def is_different_response(original_response, host_response):
     """Проверяет, отличается ли ответ с Host заголовком от оригинального"""
     if not original_response['success'] or not host_response['success']:
         return False
     
-    # Проверяем различия в статус кодах
+    # Пропускаем, если любой из ответов - false positive
+    if original_response['is_false_positive'] or host_response['is_false_positive']:
+        return False
+    
     if original_response['status_code'] != host_response['status_code']:
         return True
     
-    # Проверяем различия в заголовках Server
     orig_server = original_response['headers'].get('Server', '').lower()
     host_server = host_response['headers'].get('Server', '').lower()
     if orig_server != host_server:
         return True
     
-    # Проверяем различия в Content-Type
     orig_content = original_response['headers'].get('Content-Type', '').lower()
     host_content = host_response['headers'].get('Content-Type', '').lower()
     if orig_content != host_content:
         return True
     
-    # Проверяем различия в размере контента
     orig_length = original_response['headers'].get('Content-Length', '0')
     host_length = host_response['headers'].get('Content-Length', '0')
     if orig_length != host_length:
         return True
     
-    # Проверяем различия в теле ответа (первые 200 символов)
     orig_body = original_response['body_preview'][:200]
     host_body = host_response['body_preview'][:200]
     if orig_body != host_body:
@@ -240,13 +245,9 @@ def find_inactive_hosts_fast(targets, dns_timeout=3, http_timeout=5, max_workers
     print(f"{BLUE}[STEP 1]{RESET} Быстрый анализ {len(targets)} целей...")
     start_time = time.time()
     
-    # Извлекаем домены
     domains = [extract_domain(target) for target in targets]
-    
-    # Параллельная проверка DNS
     dns_results = check_dns_parallel(domains, dns_timeout, max_workers)
     
-    # Формируем списки для HTTP тестирования
     http_test_urls = []
     for i, target in enumerate(targets):
         domain = domains[i]
@@ -257,12 +258,10 @@ def find_inactive_hosts_fast(targets, dns_timeout=3, http_timeout=5, max_workers
                 url = target
             http_test_urls.append((domain, url))
     
-    # Параллельное HTTP тестирование
     http_results = {}
     if http_test_urls:
         http_results = test_http_parallel(http_test_urls, http_timeout, max_workers)
     
-    # Классификация доменов
     active_domains = []
     inactive_domains = []
     
@@ -297,7 +296,6 @@ def find_inactive_hosts_fast(targets, dns_timeout=3, http_timeout=5, max_workers
         print(f"{YELLOW}[INFO]{RESET} Нет неактивных доменов для поиска")
         return []
     
-    # Шаг 2: Host Header тестирование
     print(f"\n{BLUE}[STEP 2]{RESET} Host Header тестирование...")
     print(f"Тестируем {len(inactive_domains)} неактивных доменов")
     print(f"через {len(active_domains)} активных доменов")
@@ -305,7 +303,6 @@ def find_inactive_hosts_fast(targets, dns_timeout=3, http_timeout=5, max_workers
     found_access = []
     test_combinations = []
     
-    # Подготавливаем все комбинации для параллельного тестирования
     for inactive in inactive_domains:
         for active in active_domains:
             test_combinations.append((inactive, active))
@@ -313,22 +310,19 @@ def find_inactive_hosts_fast(targets, dns_timeout=3, http_timeout=5, max_workers
     def test_host_header_combination(combination):
         inactive, active = combination
         
-        # Получаем оригинальный ответ
         original_response = test_http_fast(active['url'], timeout=http_timeout)
-        if not original_response['success']:
+        if not original_response['success'] or original_response['is_false_positive']:
             return None
         
-        # Тестируем с Host заголовком
         host_response = test_http_fast(
             active['url'], 
             host_header=inactive['domain'], 
             timeout=http_timeout
         )
         
-        if not host_response['success']:
+        if not host_response['success'] or host_response['is_false_positive']:
             return None
             
-        # Проверяем различия
         if (is_successful_response(host_response['status_code']) and 
             is_different_response(original_response, host_response)):
             
@@ -336,7 +330,7 @@ def find_inactive_hosts_fast(targets, dns_timeout=3, http_timeout=5, max_workers
                 'inactive_host': inactive['domain'],
                 'inactive_original': inactive['original'],
                 'active_host': active['domain'],
-                'active_url': active['url'],
+                'active_url': host_response['final_url'],  # Используем финальный URL после редиректов
                 'active_original': active['original'],
                 'status_code': host_response['status_code'],
                 'headers': host_response['headers'],
@@ -346,7 +340,6 @@ def find_inactive_hosts_fast(targets, dns_timeout=3, http_timeout=5, max_workers
         
         return None
     
-    # Параллельное тестирование Host Header
     print(f"Параллельное тестирование {len(test_combinations)} комбинаций...")
     with ThreadPoolExecutor(max_workers=max_workers) as executor:
         future_to_combination = {executor.submit(test_host_header_combination, combo): combo 
@@ -385,7 +378,6 @@ def print_access_results(found_access):
         print(f"{CYAN}Active URL:{RESET} {access['active_url']}")
         print(f"{CYAN}Status Code:{RESET} {access['status_code']} (original: {access['original_status']})")
         
-        # Показываем интересные заголовки
         interesting_headers = ['server', 'x-powered-by', 'content-type', 'location']
         print(f"{CYAN}Interesting Headers:{RESET}")
         for header_name in interesting_headers:
@@ -394,12 +386,10 @@ def print_access_results(found_access):
                     if h_name.lower() == header_name.lower():
                         print(f"  {h_name}: {h_value}")
         
-        # Показываем превью тела ответа
         if access['body_preview']:
             print(f"{CYAN}Body Preview:{RESET}")
             print(f"  {access['body_preview'][:200]}...")
         
-        # Показываем команды для тестирования
         print(f"{CYAN}Test Commands:{RESET}")
         print(f"  curl -H \"Host: {access['inactive_host']}\" {access['active_url']} -k -L -I")
         print(f"  nuclei -u {access['active_url']} -H \"Host: {access['inactive_host']}\" -rl 110 -c 25")
@@ -435,7 +425,6 @@ def main():
     
     args = parser.parse_args()
     
-    # Загружаем цели
     targets = load_targets_from_file(args.file)
     if not targets:
         print(f"{RED}[ERROR]{RESET} Нет целей для тестирования")
@@ -444,7 +433,6 @@ def main():
     print(f"{BLUE}[INFO]{RESET} Загружено {len(targets)} целей")
     print(f"{BLUE}[INFO]{RESET} Быстрый режим: DNS timeout={args.dns_timeout}s, HTTP timeout={args.http_timeout}s, workers={args.workers}")
     
-    # Быстрый анализ
     found_access = find_inactive_hosts_fast(
         targets, 
         args.dns_timeout, 
@@ -452,14 +440,11 @@ def main():
         args.workers
     )
     
-    # Выводим результаты
     print_access_results(found_access)
     
-    # Сохраняем результаты
     if args.output and found_access:
         save_results_to_file(found_access, args.output)
     
-    # Итоговая статистика
     print(f"\n{BLUE}[FINAL STATS]{RESET}")
     print(f"Всего целей: {len(targets)}")
     print(f"Найдено доступов к неактивным хостам: {len(found_access)}")
